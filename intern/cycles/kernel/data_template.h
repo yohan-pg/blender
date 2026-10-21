@@ -140,6 +140,15 @@ KERNEL_STRUCT_MEMBER(film, int, use_approximate_shadow_catcher)
 KERNEL_STRUCT_MEMBER(film, int, pass_guiding_color)
 KERNEL_STRUCT_MEMBER(film, int, pass_guiding_probability)
 KERNEL_STRUCT_MEMBER(film, int, pass_guiding_avg_roughness)
+/* Irradiance pass (virtual Lambertian lobe at camera hits). Eight members to keep alignment. */
+KERNEL_STRUCT_MEMBER(film, int, pass_irradiance)
+KERNEL_STRUCT_MEMBER(film, float, irradiance_weight)
+KERNEL_STRUCT_MEMBER(film, float, irradiance_sample_fraction)
+KERNEL_STRUCT_MEMBER(film, float, irradiance_min_fraction)
+KERNEL_STRUCT_MEMBER(film, int, irradiance_rr)
+KERNEL_STRUCT_MEMBER(film, int, irradiance_pad0)
+KERNEL_STRUCT_MEMBER(film, int, irradiance_pad1)
+KERNEL_STRUCT_MEMBER(film, int, irradiance_pad2)
 KERNEL_STRUCT_END(KernelFilm)
 
 /* Integrator. */

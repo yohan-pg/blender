@@ -127,6 +127,7 @@ ccl_device_inline int bsdf_sample(KernelGlobals kg,
 
   switch (sc->type) {
     case CLOSURE_BSDF_DIFFUSE_ID:
+    case CLOSURE_BSDF_IRRADIANCE_ID:
       label = bsdf_diffuse_sample(sc, Ng, sd->wi, rand_xy, eval, wo, pdf);
       *sampled_roughness = one_float2();
       *eta = 1.0f;
@@ -270,6 +271,7 @@ ccl_device_inline void bsdf_roughness_eta(const KernelGlobals kg,
 #endif
   switch (sc->type) {
     case CLOSURE_BSDF_DIFFUSE_ID:
+    case CLOSURE_BSDF_IRRADIANCE_ID:
       *roughness = one_float2();
       *eta = 1.0f;
       break;
@@ -372,6 +374,7 @@ ccl_device_inline int bsdf_label(const KernelGlobals kg,
   int label;
   switch (sc->type) {
     case CLOSURE_BSDF_DIFFUSE_ID:
+    case CLOSURE_BSDF_IRRADIANCE_ID:
     case CLOSURE_BSSRDF_BURLEY_ID:
     case CLOSURE_BSSRDF_RANDOM_WALK_ID:
     case CLOSURE_BSSRDF_RANDOM_WALK_SKIN_ID:
@@ -477,6 +480,7 @@ ccl_device_inline
 
   switch (sc->type) {
     case CLOSURE_BSDF_DIFFUSE_ID:
+    case CLOSURE_BSDF_IRRADIANCE_ID:
       eval = bsdf_diffuse_eval(sc, sd->wi, wo, pdf);
       break;
 #if defined(__SVM__) || defined(__OSL__)

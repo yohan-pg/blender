@@ -27,9 +27,13 @@ ccl_device_inline void bsdf_eval_init(ccl_private BsdfEval *eval,
 {
   eval->diffuse = zero_spectrum();
   eval->glossy = zero_spectrum();
+  eval->irradiance = zero_spectrum();
 
   if (CLOSURE_IS_BSDF_DIFFUSE(sc->type)) {
     eval->diffuse = value;
+  }
+  else if (sc->type == CLOSURE_BSDF_IRRADIANCE_ID) {
+    eval->irradiance = value;
   }
   else if (CLOSURE_IS_BSDF_GLOSSY(sc->type)) {
     eval->glossy = value;
@@ -48,6 +52,7 @@ ccl_device_inline void bsdf_eval_init(ccl_private BsdfEval *eval, Spectrum value
 {
   eval->diffuse = zero_spectrum();
   eval->glossy = zero_spectrum();
+  eval->irradiance = zero_spectrum();
   eval->sum = value;
 }
 
@@ -58,6 +63,9 @@ ccl_device_inline void bsdf_eval_accum(ccl_private BsdfEval *eval,
 {
   if (CLOSURE_IS_BSDF_DIFFUSE(sc->type)) {
     eval->diffuse += value;
+  }
+  else if (sc->type == CLOSURE_BSDF_IRRADIANCE_ID) {
+    eval->irradiance += value;
   }
   else if (CLOSURE_IS_BSDF_GLOSSY(sc->type)) {
     eval->glossy += value;
@@ -85,6 +93,7 @@ ccl_device_inline void bsdf_eval_mul(ccl_private BsdfEval *eval, float value)
 {
   eval->diffuse *= value;
   eval->glossy *= value;
+  eval->irradiance *= value;
   eval->sum *= value;
 }
 
@@ -92,6 +101,7 @@ ccl_device_inline void bsdf_eval_mul(ccl_private BsdfEval *eval, Spectrum value)
 {
   eval->diffuse *= value;
   eval->glossy *= value;
+  eval->irradiance *= value;
   eval->sum *= value;
 }
 
@@ -112,6 +122,26 @@ ccl_device_inline Spectrum bsdf_eval_pass_glossy_weight(ccl_private const BsdfEv
   /* Ratio of glossy weight to recover proportions for writing to render pass.
    * We assume reflection, transmission and volume scatter to be exclusive. */
   return safe_divide(eval->glossy, eval->sum);
+}
+
+ccl_device_inline Spectrum bsdf_eval_pass_irradiance_weight(KernelGlobals kg,
+                                                            ccl_private const BsdfEval *eval)
+{
+  /* Fraction of the throughput that went through the virtual irradiance lobe, divided by the
+   * lobe's (tiny) contribution weight, so that weight * contribution estimates E/pi directly. */
+  if (kernel_data.film.pass_irradiance == PASS_UNUSED) {
+    return zero_spectrum();
+  }
+  return safe_divide(eval->irradiance, eval->sum) / kernel_data.film.irradiance_weight;
+}
+
+/* Transmission pass weight is what remains after diffuse, glossy and the virtual irradiance lobe
+ * (whose share of the throughput is irradiance_weight * pass_irradiance_weight). */
+ccl_device_inline Spectrum film_irradiance_share(KernelGlobals kg, const Spectrum irradiance_weight)
+{
+  return (kernel_data.film.pass_irradiance == PASS_UNUSED) ?
+             zero_spectrum() :
+             irradiance_weight * kernel_data.film.irradiance_weight;
 }
 
 /* --------------------------------------------------------------------
@@ -413,6 +443,15 @@ ccl_device_inline void film_write_emission_or_background_pass(
       const Spectrum diffuse_weight = INTEGRATOR_STATE(state, path, pass_diffuse_weight);
       const Spectrum glossy_weight = INTEGRATOR_STATE(state, path, pass_glossy_weight);
 
+      /* Irradiance at the camera hit (virtual Lambertian lobe). */
+      Spectrum irradiance_share = zero_spectrum();
+      if (kernel_data.film.pass_irradiance != PASS_UNUSED) {
+        const Spectrum irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
+        film_write_pass_spectrum(buffer + kernel_data.film.pass_irradiance,
+                                 irradiance_weight * contribution);
+        irradiance_share = film_irradiance_share(kg, irradiance_weight);
+      }
+
       /* Glossy */
       const int glossy_pass_offset = ((INTEGRATOR_STATE(state, path, bounce) == 1) ?
                                           kernel_data.film.pass_glossy_direct :
@@ -429,7 +468,8 @@ ccl_device_inline void film_write_emission_or_background_pass(
       if (transmission_pass_offset != PASS_UNUSED) {
         /* Transmission is what remains if not diffuse and glossy, not stored explicitly to save
          * GPU memory. */
-        const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight;
+        const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight -
+                                             irradiance_share;
         film_write_pass_spectrum(buffer + transmission_pass_offset,
                                  transmission_weight * contribution);
       }
@@ -511,6 +551,16 @@ ccl_device_inline void film_write_direct_light(KernelGlobals kg,
         const Spectrum diffuse_weight = INTEGRATOR_STATE(state, shadow_path, pass_diffuse_weight);
         const Spectrum glossy_weight = INTEGRATOR_STATE(state, shadow_path, pass_glossy_weight);
 
+        /* Irradiance at the camera hit (virtual Lambertian lobe). */
+        Spectrum irradiance_share = zero_spectrum();
+        if (kernel_data.film.pass_irradiance != PASS_UNUSED) {
+          const Spectrum irradiance_weight = INTEGRATOR_STATE(
+              state, shadow_path, pass_irradiance_weight);
+          film_write_pass_spectrum(buffer + kernel_data.film.pass_irradiance,
+                                   irradiance_weight * contribution);
+          irradiance_share = film_irradiance_share(kg, irradiance_weight);
+        }
+
         /* Glossy */
         const int glossy_pass_offset = ((INTEGRATOR_STATE(state, shadow_path, bounce) == 0) ?
                                             kernel_data.film.pass_glossy_direct :
@@ -527,7 +577,8 @@ ccl_device_inline void film_write_direct_light(KernelGlobals kg,
         if (transmission_pass_offset != PASS_UNUSED) {
           /* Transmission is what remains if not diffuse and glossy, not stored explicitly to save
            * GPU memory. */
-          const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight;
+          const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight -
+                                               irradiance_share;
           film_write_pass_spectrum(buffer + transmission_pass_offset,
                                    transmission_weight * contribution);
         }

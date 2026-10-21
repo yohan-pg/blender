@@ -1463,6 +1463,13 @@ class CyclesRenderLayerSettings(bpy.types.PropertyGroup):
         default=False,
         update=update_render_passes,
     )
+    use_pass_irradiance: BoolProperty(
+        name="Irradiance",
+        description="Irradiance E/pi at the first camera hit, from a virtual white Lambertian lobe "
+        "with a tiny weight (beauty stays unbiased and visually unchanged). Background is 0",
+        default=False,
+        update=update_render_passes,
+    )
 
     use_denoising: BoolProperty(
         name="Use Denoising",

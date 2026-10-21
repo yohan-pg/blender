@@ -57,6 +57,10 @@ ccl_device_inline void path_state_init_integrator(KernelGlobals kg,
   INTEGRATOR_STATE_WRITE(state, path, continuation_probability) = 1.0f;
   INTEGRATOR_STATE_WRITE(state, path, throughput) = one_spectrum();
 
+  if (kernel_data.kernel_features & KERNEL_FEATURE_LIGHT_PASSES) {
+    INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) = zero_spectrum();
+  }
+
 #ifdef __PATH_GUIDING__
   INTEGRATOR_STATE_WRITE(state, path, unguided_throughput) = 1.0f;
   INTEGRATOR_STATE_WRITE(state, guiding, path_segment) = nullptr;
@@ -281,7 +285,16 @@ ccl_device_inline float path_state_continuation_probability(KernelGlobals kg,
 #if defined(__PATH_GUIDING__) && PATH_GUIDING_LEVEL >= 4
   throughput *= INTEGRATOR_STATE(state, path, unguided_throughput);
 #endif
-  return min(sqrtf(reduce_max(fabs(throughput))), 1.0f);
+  float max_throughput = reduce_max(fabs(throughput));
+  /* Irradiance pass: paths through the virtual lobe carry a tiny beauty throughput but a normal
+   * irradiance throughput; base the termination on the larger one so they are not killed early. */
+  if (kernel_data.film.pass_irradiance != PASS_UNUSED && kernel_data.film.irradiance_rr &&
+      (path_flag & PATH_RAY_SURFACE_PASS))
+  {
+    const Spectrum irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
+    max_throughput = fmaxf(max_throughput, reduce_max(fabs(throughput * irradiance_weight)));
+  }
+  return min(sqrtf(max_throughput), 1.0f);
 }
 
 ccl_device_inline bool path_state_ao_bounce(KernelGlobals kg, ConstIntegratorState state)

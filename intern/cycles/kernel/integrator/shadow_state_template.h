@@ -37,6 +37,10 @@ KERNEL_STRUCT_MEMBER(shadow_path,
 /* Ratio of throughput to distinguish diffuse / glossy / transmission render passes. */
 KERNEL_STRUCT_MEMBER(shadow_path, PackedSpectrum, pass_diffuse_weight, KERNEL_FEATURE_LIGHT_PASSES)
 KERNEL_STRUCT_MEMBER(shadow_path, PackedSpectrum, pass_glossy_weight, KERNEL_FEATURE_LIGHT_PASSES)
+KERNEL_STRUCT_MEMBER(shadow_path,
+                     PackedSpectrum,
+                     pass_irradiance_weight,
+                     KERNEL_FEATURE_LIGHT_PASSES)
 /* Number of intersections found by ray-tracing. */
 KERNEL_STRUCT_MEMBER(shadow_path, uint16_t, num_hits, KERNEL_FEATURE_PATH_TRACING)
 /* Light group. */

@@ -633,14 +633,15 @@ bool OIDNDenoiser::denoise_buffer(const BufferParams &buffer_params,
   if (context.need_denoising()) {
     context.read_guiding_passes();
 
-    const std::array<PassType, 3> passes = {
+    const std::array<PassType, 4> passes = {
         {/* Passes which will use real albedo when it is available. */
          PASS_COMBINED,
          PASS_SHADOW_CATCHER_MATTE,
 
          /* Passes which do not need albedo and hence if real is present it needs to become fake.
           */
-         PASS_SHADOW_CATCHER}};
+         PASS_SHADOW_CATCHER,
+         PASS_IRRADIANCE}};
 
     for (const PassType pass_type : passes) {
       context.denoise_pass(pass_type);

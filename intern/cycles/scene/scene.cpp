@@ -566,7 +566,11 @@ void Scene::update_kernel_features()
   dscene.data.kernel_features = kernel_features;
 
   /* Currently viewport render is faster with higher max_closures, needs investigating. */
-  const uint max_closures = (params.background) ? get_max_closure_count() : MAX_CLOSURE;
+  uint max_closures = (params.background) ? get_max_closure_count() : MAX_CLOSURE;
+  /* Irradiance pass appends one virtual closure at camera hits. */
+  if (Pass::contains(passes, PASS_IRRADIANCE)) {
+    max_closures = min(max_closures + 1, (uint)MAX_CLOSURE);
+  }
   dscene.data.max_closures = max_closures;
   dscene.data.max_shaders = shaders.size();
 }

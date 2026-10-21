@@ -526,6 +526,8 @@ typedef enum PassType {
   PASS_VOLUME,
   PASS_VOLUME_DIRECT,
   PASS_VOLUME_INDIRECT,
+  /* Irradiance E/pi at the first camera hit, from a virtual white Lambertian lobe. */
+  PASS_IRRADIANCE,
   PASS_CATEGORY_LIGHT_END = 31,
 
   /* Data passes */
@@ -597,6 +599,8 @@ typedef enum CryptomatteType {
 typedef struct BsdfEval {
   Spectrum diffuse;
   Spectrum glossy;
+  /* Contribution of the virtual irradiance closure (CLOSURE_BSDF_IRRADIANCE_ID). */
+  Spectrum irradiance;
   Spectrum sum;
 } BsdfEval;
 

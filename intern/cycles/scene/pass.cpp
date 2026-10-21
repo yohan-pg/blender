@@ -65,6 +65,7 @@ const NodeEnum *Pass::get_type_enum()
     pass_type_enum.insert("volume", PASS_VOLUME);
     pass_type_enum.insert("volume_direct", PASS_VOLUME_DIRECT);
     pass_type_enum.insert("volume_indirect", PASS_VOLUME_INDIRECT);
+    pass_type_enum.insert("irradiance", PASS_IRRADIANCE);
 
     /* Data passes. */
     pass_type_enum.insert("depth", PASS_DEPTH);
@@ -273,6 +274,13 @@ PassInfo Pass::get_info(const PassType type, const bool include_albedo, const bo
     case PASS_VOLUME_INDIRECT:
       pass_info.num_components = 3;
       pass_info.use_exposure = true;
+      break;
+    case PASS_IRRADIANCE:
+      /* E/pi at the camera hit. Denoised with a constant (fake) albedo, like the shadow catcher. */
+      pass_info.num_components = 3;
+      pass_info.use_exposure = true;
+      pass_info.use_denoising_albedo = false;
+      pass_info.support_denoise = true;
       break;
 
     case PASS_CRYPTOMATTE:

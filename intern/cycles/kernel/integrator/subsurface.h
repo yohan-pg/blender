@@ -133,6 +133,7 @@ ccl_device int subsurface_bounce(KernelGlobals kg,
     if (INTEGRATOR_STATE(state, path, bounce) == 0) {
       INTEGRATOR_STATE_WRITE(state, path, pass_diffuse_weight) = one_spectrum();
       INTEGRATOR_STATE_WRITE(state, path, pass_glossy_weight) = zero_spectrum();
+      INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) = zero_spectrum();
     }
   }
 

@@ -827,21 +827,26 @@ ccl_device_forceinline void integrate_volume_direct_light(
   if (kernel_data.kernel_features & KERNEL_FEATURE_LIGHT_PASSES) {
     PackedSpectrum pass_diffuse_weight;
     PackedSpectrum pass_glossy_weight;
+    PackedSpectrum pass_irradiance_weight;
 
     if (shadow_flag & PATH_RAY_ANY_PASS) {
       /* Indirect bounce, use weights from earlier surface or volume bounce. */
       pass_diffuse_weight = INTEGRATOR_STATE(state, path, pass_diffuse_weight);
       pass_glossy_weight = INTEGRATOR_STATE(state, path, pass_glossy_weight);
+      pass_irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
     }
     else {
       /* Direct light, no diffuse/glossy distinction needed for volumes. */
       shadow_flag |= PATH_RAY_VOLUME_PASS;
       pass_diffuse_weight = one_spectrum();
       pass_glossy_weight = zero_spectrum();
+      pass_irradiance_weight = zero_spectrum();
     }
 
     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_diffuse_weight) = pass_diffuse_weight;
     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_glossy_weight) = pass_glossy_weight;
+    INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_irradiance_weight) =
+        pass_irradiance_weight;
   }
 
   INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, render_pixel_index) = INTEGRATOR_STATE(
@@ -962,6 +967,7 @@ ccl_device_forceinline bool integrate_volume_phase_scatter(
     if (INTEGRATOR_STATE(state, path, bounce) == 0) {
       INTEGRATOR_STATE_WRITE(state, path, pass_diffuse_weight) = one_spectrum();
       INTEGRATOR_STATE_WRITE(state, path, pass_glossy_weight) = zero_spectrum();
+      INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) = zero_spectrum();
     }
   }
 

@@ -448,6 +448,9 @@ typedef enum ClosureType {
   CLOSURE_BSDF_HAIR_HUANG_ID,
 
   /* Special cases */
+  /* Virtual white Lambertian lobe added at camera hits for the Irradiance pass (never created by
+   * shader nodes). Not counted as diffuse/glossy/transmission for the regular light passes. */
+  CLOSURE_BSDF_IRRADIANCE_ID,
   CLOSURE_BSDF_RAY_PORTAL_ID,
   CLOSURE_BSDF_TRANSPARENT_ID,
 

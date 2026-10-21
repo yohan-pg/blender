@@ -111,6 +111,7 @@ bool DenoiserGPU::denoise_buffer(const DenoiseTask &task)
 
   /* Passes which do not need albedo and hence if real is present it needs to become fake. */
   denoise_pass(context, PASS_SHADOW_CATCHER);
+  denoise_pass(context, PASS_IRRADIANCE);
 
   return true;
 }

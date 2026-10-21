@@ -20,7 +20,20 @@
 #include "util/math_cdf.h"
 #include "util/time.h"
 
+#include <cstdlib>
+
 CCL_NAMESPACE_BEGIN
+
+/* Irradiance pass tuning, read from the environment (defaults in parentheses):
+ *   CYCLES_IRRADIANCE_WEIGHT        contribution weight of the virtual lobe (1e-3)
+ *   CYCLES_IRRADIANCE_FRACTION      min. share of cosine-lobe sampling at camera hits (0.35)
+ *   CYCLES_IRRADIANCE_MIN_FRACTION  min. selection share of the virtual lobe itself (0.05)
+ *   CYCLES_IRRADIANCE_RR            1: Russian roulette also looks at irradiance throughput (1) */
+static float irradiance_env(const char *name, const float default_value)
+{
+  const char *value = getenv(name);
+  return (value && value[0]) ? (float)atof(value) : default_value;
+}
 
 /* Pixel Filter */
 
@@ -201,6 +214,15 @@ void Film::device_update(Device *device, DeviceScene *dscene, Scene *scene)
   kfilm->pass_guiding_probability = PASS_UNUSED;
   kfilm->pass_guiding_avg_roughness = PASS_UNUSED;
 
+  kfilm->pass_irradiance = PASS_UNUSED;
+  kfilm->irradiance_weight = clamp(irradiance_env("CYCLES_IRRADIANCE_WEIGHT", 1e-3f), 1e-6f, 1.0f);
+  kfilm->irradiance_sample_fraction = clamp(
+      irradiance_env("CYCLES_IRRADIANCE_FRACTION", 0.35f), 0.0f, 0.95f);
+  kfilm->irradiance_min_fraction = clamp(
+      irradiance_env("CYCLES_IRRADIANCE_MIN_FRACTION", 0.05f), 1e-3f, 0.95f);
+  kfilm->irradiance_rr = (irradiance_env("CYCLES_IRRADIANCE_RR", 1.0f) != 0.0f) ? 1 : 0;
+  kfilm->irradiance_pad0 = kfilm->irradiance_pad1 = kfilm->irradiance_pad2 = 0;
+
   bool have_cryptomatte = false;
   bool have_aov_color = false;
   bool have_aov_value = false;
@@ -325,6 +347,9 @@ void Film::device_update(Device *device, DeviceScene *dscene, Scene *scene)
         break;
       case PASS_VOLUME_DIRECT:
         kfilm->pass_volume_direct = kfilm->pass_stride;
+        break;
+      case PASS_IRRADIANCE:
+        kfilm->pass_irradiance = kfilm->pass_stride;
         break;
 
       case PASS_BAKE_PRIMITIVE:
@@ -548,6 +573,10 @@ void Film::update_passes(Scene *scene, bool add_sample_count_pass)
     if (info.support_denoise && use_denoise) {
       add_auto_pass(scene, pass->get_type(), PassMode::DENOISED);
     }
+    /* The kernel writes the irradiance pass into its noisy version. */
+    if (pass->get_type() == PASS_IRRADIANCE) {
+      add_auto_pass(scene, PASS_IRRADIANCE, PassMode::NOISY);
+    }
   }
 
   if (bake_manager->get_baking()) {
@@ -720,7 +749,7 @@ uint Film::get_kernel_features(const Scene *scene) const
       kernel_features |= KERNEL_FEATURE_DENOISING;
     }
 
-    if (pass_type >= PASS_DIFFUSE && pass_type <= PASS_VOLUME_INDIRECT) {
+    if (pass_type >= PASS_DIFFUSE && pass_type <= PASS_IRRADIANCE) {
       kernel_features |= KERNEL_FEATURE_LIGHT_PASSES;
     }
 

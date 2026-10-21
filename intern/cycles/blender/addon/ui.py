@@ -1047,6 +1047,7 @@ class CYCLES_RENDER_PT_passes_light(CyclesButtonsPanel, Panel):
         col.prop(view_layer, "use_pass_environment")
         col.prop(view_layer, "use_pass_ambient_occlusion", text="Ambient Occlusion")
         col.prop(cycles_view_layer, "use_pass_shadow_catcher")
+        col.prop(cycles_view_layer, "use_pass_irradiance")
 
 
 class CYCLES_RENDER_PT_passes_crypto(CyclesButtonsPanel, ViewLayerCryptomattePanel, Panel):

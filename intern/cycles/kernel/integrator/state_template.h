@@ -58,6 +58,8 @@ KERNEL_STRUCT_MEMBER(path, float, unguided_throughput, KERNEL_FEATURE_PATH_GUIDI
 /* Ratio of throughput to distinguish diffuse / glossy / transmission render passes. */
 KERNEL_STRUCT_MEMBER(path, PackedSpectrum, pass_diffuse_weight, KERNEL_FEATURE_LIGHT_PASSES)
 KERNEL_STRUCT_MEMBER(path, PackedSpectrum, pass_glossy_weight, KERNEL_FEATURE_LIGHT_PASSES)
+/* Irradiance pass weight: (virtual lobe eval / irradiance_weight) / total eval at the camera hit. */
+KERNEL_STRUCT_MEMBER(path, PackedSpectrum, pass_irradiance_weight, KERNEL_FEATURE_LIGHT_PASSES)
 /* Denoising. */
 KERNEL_STRUCT_MEMBER(path, PackedSpectrum, denoising_feature_throughput, KERNEL_FEATURE_DENOISING)
 /* Shader sorting. */

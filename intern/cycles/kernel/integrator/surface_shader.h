@@ -209,6 +209,63 @@ ccl_device_inline void surface_shader_prepare_closures(KernelGlobals kg,
   }
 }
 
+/* Irradiance pass: append a virtual white Lambertian closure (normal sd->N) at the first camera
+ * hit. Its contribution weight is tiny (kernel_data.film.irradiance_weight) so the beauty is
+ * visually unchanged, but it gets a large share of the closure-selection probability
+ * (irradiance_sample_fraction). Closure selection and MIS use sample_weight while the estimate
+ * uses weight, so the beauty stays unbiased; the light that reaches the camera through this lobe,
+ * divided by its weight, is an unbiased estimate of E/pi. Returns true if the lobe was added. */
+ccl_device_inline bool surface_shader_add_irradiance_closure(KernelGlobals kg,
+                                                             ConstIntegratorState state,
+                                                             ccl_private ShaderData *sd,
+                                                             const uint32_t path_flag)
+{
+  if (kernel_data.film.pass_irradiance == PASS_UNUSED) {
+    return false;
+  }
+  if (!(path_flag & PATH_RAY_CAMERA) || INTEGRATOR_STATE(state, path, bounce) != 0 ||
+      INTEGRATOR_STATE(state, path, transparent_bounce) != 0)
+  {
+    return false;
+  }
+  if (path_flag & (PATH_RAY_TERMINATE | PATH_RAY_SHADOW_CATCHER_PASS)) {
+    return false;
+  }
+
+  /* S: total selection weight, D: weight of closures that already sample a cosine lobe. */
+  float sum_sample_weight = 0.0f, diffuse_sample_weight = 0.0f;
+  for (int i = 0; i < sd->num_closure; i++) {
+    ccl_private const ShaderClosure *sc = &sd->closure[i];
+    if (CLOSURE_IS_BSDF_OR_BSSRDF(sc->type)) {
+      sum_sample_weight += sc->sample_weight;
+      if (sc->type == CLOSURE_BSDF_DIFFUSE_ID || sc->type == CLOSURE_BSDF_OREN_NAYAR_ID) {
+        diffuse_sample_weight += sc->sample_weight;
+      }
+    }
+  }
+
+  ccl_private ShaderClosure *sc = closure_alloc(
+      sd, sizeof(DiffuseBsdf), CLOSURE_BSDF_IRRADIANCE_ID, make_spectrum(kernel_data.film.irradiance_weight));
+  if (sc == NULL) {
+    return false;
+  }
+  /* Choose the lobe's selection weight s so that cosine-like sampling (existing diffuse closures
+   * plus this lobe) gets at least a fraction f of all selections: (D + s) / (S + s) = f, and the
+   * lobe itself at least fmin (it must keep a non-zero pdf, e.g. under bump-mapped diffuse).
+   * With no other closure (pure emission, black surfaces) the lobe is always sampled. */
+  const float f = kernel_data.film.irradiance_sample_fraction;
+  const float fmin = kernel_data.film.irradiance_min_fraction;
+  float s = 1.0f;
+  if (sum_sample_weight > 0.0f) {
+    s = fmaxf((f * sum_sample_weight - diffuse_sample_weight) / (1.0f - f),
+              sum_sample_weight * fmin / (1.0f - fmin));
+  }
+  sc->sample_weight = s;
+  sc->N = sd->N;
+  sd->flag |= SD_BSDF | SD_BSDF_HAS_EVAL;
+  return true;
+}
+
 /* BSDF */
 #ifdef WITH_CYCLES_DEBUG
 ccl_device_inline void surface_shader_validate_bsdf_sample(const KernelGlobals kg,
@@ -237,7 +294,7 @@ ccl_device_forceinline bool _surface_shader_exclude(ClosureType type, uint light
     return false;
   }
   if (light_shader_flags & SHADER_EXCLUDE_DIFFUSE) {
-    if (CLOSURE_IS_BSDF_DIFFUSE(type)) {
+    if (CLOSURE_IS_BSDF_DIFFUSE(type) || type == CLOSURE_BSDF_IRRADIANCE_ID) {
       return true;
     }
   }

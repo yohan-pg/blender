@@ -1,0 +1,730 @@
+diff --git a/intern/cycles/blender/addon/engine.py b/intern/cycles/blender/addon/engine.py
+index b12216a..1a2a7b4 100644
+--- a/intern/cycles/blender/addon/engine.py
++++ b/intern/cycles/blender/addon/engine.py
+@@ -210,6 +210,7 @@ def list_render_passes(scene, srl):
+     if srl.use_pass_environment:           yield ("Env",           "RGB",  'COLOR')
+     if srl.use_pass_ambient_occlusion:     yield ("AO",            "RGB",  'COLOR')
+     if crl.use_pass_shadow_catcher:        yield ("Shadow Catcher",      "RGB",  'COLOR')
++    if crl.use_pass_irradiance:            yield ("Irradiance",    "RGB",  'COLOR')
+     # autopep8: on
+ 
+     # Debug passes.
+@@ -236,6 +237,8 @@ def list_render_passes(scene, srl):
+         yield ("Noisy Image", "RGBA", 'COLOR')
+         if crl.use_pass_shadow_catcher:
+             yield ("Noisy Shadow Catcher", "RGB", 'COLOR')
++        if crl.use_pass_irradiance:
++            yield ("Noisy Irradiance", "RGB", 'COLOR')
+     if crl.denoising_store_passes:
+         yield ("Denoising Normal", "XYZ", 'VECTOR')
+         yield ("Denoising Albedo", "RGB", 'COLOR')
+diff --git a/intern/cycles/blender/addon/properties.py b/intern/cycles/blender/addon/properties.py
+index 885d8b3..a343834 100644
+--- a/intern/cycles/blender/addon/properties.py
++++ b/intern/cycles/blender/addon/properties.py
+@@ -1463,6 +1463,13 @@ class CyclesRenderLayerSettings(bpy.types.PropertyGroup):
+         default=False,
+         update=update_render_passes,
+     )
++    use_pass_irradiance: BoolProperty(
++        name="Irradiance",
++        description="Irradiance E/pi at the first camera hit, from a virtual white Lambertian lobe "
++        "with a tiny weight (beauty stays unbiased and visually unchanged). Background is 0",
++        default=False,
++        update=update_render_passes,
++    )
+ 
+     use_denoising: BoolProperty(
+         name="Use Denoising",
+diff --git a/intern/cycles/blender/addon/ui.py b/intern/cycles/blender/addon/ui.py
+index 9043384..0e45160 100644
+--- a/intern/cycles/blender/addon/ui.py
++++ b/intern/cycles/blender/addon/ui.py
+@@ -1047,6 +1047,7 @@ class CYCLES_RENDER_PT_passes_light(CyclesButtonsPanel, Panel):
+         col.prop(view_layer, "use_pass_environment")
+         col.prop(view_layer, "use_pass_ambient_occlusion", text="Ambient Occlusion")
+         col.prop(cycles_view_layer, "use_pass_shadow_catcher")
++        col.prop(cycles_view_layer, "use_pass_irradiance")
+ 
+ 
+ class CYCLES_RENDER_PT_passes_crypto(CyclesButtonsPanel, ViewLayerCryptomattePanel, Panel):
+diff --git a/intern/cycles/blender/sync.cpp b/intern/cycles/blender/sync.cpp
+index b14455a..6e4d606 100644
+--- a/intern/cycles/blender/sync.cpp
++++ b/intern/cycles/blender/sync.cpp
+@@ -671,6 +671,9 @@ static bool get_known_pass_type(BL::RenderPass &b_pass, PassType &type, PassMode
+   MAP_PASS("TransInd", PASS_TRANSMISSION_INDIRECT, false);
+   MAP_PASS("VolumeInd", PASS_VOLUME_INDIRECT, false);
+ 
++  MAP_PASS("Irradiance", PASS_IRRADIANCE, false);
++  MAP_PASS("Noisy Irradiance", PASS_IRRADIANCE, true);
++
+   MAP_PASS("DiffCol", PASS_DIFFUSE_COLOR, false);
+   MAP_PASS("GlossCol", PASS_GLOSSY_COLOR, false);
+   MAP_PASS("TransCol", PASS_TRANSMISSION_COLOR, false);
+diff --git a/intern/cycles/integrator/denoiser_gpu.cpp b/intern/cycles/integrator/denoiser_gpu.cpp
+index 6c3a2f1..e96d8df 100644
+--- a/intern/cycles/integrator/denoiser_gpu.cpp
++++ b/intern/cycles/integrator/denoiser_gpu.cpp
+@@ -111,6 +111,7 @@ bool DenoiserGPU::denoise_buffer(const DenoiseTask &task)
+ 
+   /* Passes which do not need albedo and hence if real is present it needs to become fake. */
+   denoise_pass(context, PASS_SHADOW_CATCHER);
++  denoise_pass(context, PASS_IRRADIANCE);
+ 
+   return true;
+ }
+diff --git a/intern/cycles/integrator/denoiser_oidn.cpp b/intern/cycles/integrator/denoiser_oidn.cpp
+index 0e994a7..6b74f32 100644
+--- a/intern/cycles/integrator/denoiser_oidn.cpp
++++ b/intern/cycles/integrator/denoiser_oidn.cpp
+@@ -633,14 +633,15 @@ bool OIDNDenoiser::denoise_buffer(const BufferParams &buffer_params,
+   if (context.need_denoising()) {
+     context.read_guiding_passes();
+ 
+-    const std::array<PassType, 3> passes = {
++    const std::array<PassType, 4> passes = {
+         {/* Passes which will use real albedo when it is available. */
+          PASS_COMBINED,
+          PASS_SHADOW_CATCHER_MATTE,
+ 
+          /* Passes which do not need albedo and hence if real is present it needs to become fake.
+           */
+-         PASS_SHADOW_CATCHER}};
++         PASS_SHADOW_CATCHER,
++         PASS_IRRADIANCE}};
+ 
+     for (const PassType pass_type : passes) {
+       context.denoise_pass(pass_type);
+diff --git a/intern/cycles/kernel/closure/bsdf.h b/intern/cycles/kernel/closure/bsdf.h
+index a436bea..96bb6b0 100644
+--- a/intern/cycles/kernel/closure/bsdf.h
++++ b/intern/cycles/kernel/closure/bsdf.h
+@@ -127,6 +127,7 @@ ccl_device_inline int bsdf_sample(KernelGlobals kg,
+ 
+   switch (sc->type) {
+     case CLOSURE_BSDF_DIFFUSE_ID:
++    case CLOSURE_BSDF_IRRADIANCE_ID:
+       label = bsdf_diffuse_sample(sc, Ng, sd->wi, rand_xy, eval, wo, pdf);
+       *sampled_roughness = one_float2();
+       *eta = 1.0f;
+@@ -270,6 +271,7 @@ ccl_device_inline void bsdf_roughness_eta(const KernelGlobals kg,
+ #endif
+   switch (sc->type) {
+     case CLOSURE_BSDF_DIFFUSE_ID:
++    case CLOSURE_BSDF_IRRADIANCE_ID:
+       *roughness = one_float2();
+       *eta = 1.0f;
+       break;
+@@ -372,6 +374,7 @@ ccl_device_inline int bsdf_label(const KernelGlobals kg,
+   int label;
+   switch (sc->type) {
+     case CLOSURE_BSDF_DIFFUSE_ID:
++    case CLOSURE_BSDF_IRRADIANCE_ID:
+     case CLOSURE_BSSRDF_BURLEY_ID:
+     case CLOSURE_BSSRDF_RANDOM_WALK_ID:
+     case CLOSURE_BSSRDF_RANDOM_WALK_SKIN_ID:
+@@ -477,6 +480,7 @@ ccl_device_inline
+ 
+   switch (sc->type) {
+     case CLOSURE_BSDF_DIFFUSE_ID:
++    case CLOSURE_BSDF_IRRADIANCE_ID:
+       eval = bsdf_diffuse_eval(sc, sd->wi, wo, pdf);
+       break;
+ #if defined(__SVM__) || defined(__OSL__)
+diff --git a/intern/cycles/kernel/data_template.h b/intern/cycles/kernel/data_template.h
+index 358e419..963bc98 100644
+--- a/intern/cycles/kernel/data_template.h
++++ b/intern/cycles/kernel/data_template.h
+@@ -140,6 +140,15 @@ KERNEL_STRUCT_MEMBER(film, int, use_approximate_shadow_catcher)
+ KERNEL_STRUCT_MEMBER(film, int, pass_guiding_color)
+ KERNEL_STRUCT_MEMBER(film, int, pass_guiding_probability)
+ KERNEL_STRUCT_MEMBER(film, int, pass_guiding_avg_roughness)
++/* Irradiance pass (virtual Lambertian lobe at camera hits). Eight members to keep alignment. */
++KERNEL_STRUCT_MEMBER(film, int, pass_irradiance)
++KERNEL_STRUCT_MEMBER(film, float, irradiance_weight)
++KERNEL_STRUCT_MEMBER(film, float, irradiance_sample_fraction)
++KERNEL_STRUCT_MEMBER(film, float, irradiance_min_fraction)
++KERNEL_STRUCT_MEMBER(film, int, irradiance_rr)
++KERNEL_STRUCT_MEMBER(film, int, irradiance_pad0)
++KERNEL_STRUCT_MEMBER(film, int, irradiance_pad1)
++KERNEL_STRUCT_MEMBER(film, int, irradiance_pad2)
+ KERNEL_STRUCT_END(KernelFilm)
+ 
+ /* Integrator. */
+diff --git a/intern/cycles/kernel/film/light_passes.h b/intern/cycles/kernel/film/light_passes.h
+index 1e73339..bc5ed80 100644
+--- a/intern/cycles/kernel/film/light_passes.h
++++ b/intern/cycles/kernel/film/light_passes.h
+@@ -27,10 +27,14 @@ ccl_device_inline void bsdf_eval_init(ccl_private BsdfEval *eval,
+ {
+   eval->diffuse = zero_spectrum();
+   eval->glossy = zero_spectrum();
++  eval->irradiance = zero_spectrum();
+ 
+   if (CLOSURE_IS_BSDF_DIFFUSE(sc->type)) {
+     eval->diffuse = value;
+   }
++  else if (sc->type == CLOSURE_BSDF_IRRADIANCE_ID) {
++    eval->irradiance = value;
++  }
+   else if (CLOSURE_IS_BSDF_GLOSSY(sc->type)) {
+     eval->glossy = value;
+   }
+@@ -48,6 +52,7 @@ ccl_device_inline void bsdf_eval_init(ccl_private BsdfEval *eval, Spectrum value
+ {
+   eval->diffuse = zero_spectrum();
+   eval->glossy = zero_spectrum();
++  eval->irradiance = zero_spectrum();
+   eval->sum = value;
+ }
+ 
+@@ -59,6 +64,9 @@ ccl_device_inline void bsdf_eval_accum(ccl_private BsdfEval *eval,
+   if (CLOSURE_IS_BSDF_DIFFUSE(sc->type)) {
+     eval->diffuse += value;
+   }
++  else if (sc->type == CLOSURE_BSDF_IRRADIANCE_ID) {
++    eval->irradiance += value;
++  }
+   else if (CLOSURE_IS_BSDF_GLOSSY(sc->type)) {
+     eval->glossy += value;
+   }
+@@ -85,6 +93,7 @@ ccl_device_inline void bsdf_eval_mul(ccl_private BsdfEval *eval, float value)
+ {
+   eval->diffuse *= value;
+   eval->glossy *= value;
++  eval->irradiance *= value;
+   eval->sum *= value;
+ }
+ 
+@@ -92,6 +101,7 @@ ccl_device_inline void bsdf_eval_mul(ccl_private BsdfEval *eval, Spectrum value)
+ {
+   eval->diffuse *= value;
+   eval->glossy *= value;
++  eval->irradiance *= value;
+   eval->sum *= value;
+ }
+ 
+@@ -114,6 +124,26 @@ ccl_device_inline Spectrum bsdf_eval_pass_glossy_weight(ccl_private const BsdfEv
+   return safe_divide(eval->glossy, eval->sum);
+ }
+ 
++ccl_device_inline Spectrum bsdf_eval_pass_irradiance_weight(KernelGlobals kg,
++                                                            ccl_private const BsdfEval *eval)
++{
++  /* Fraction of the throughput that went through the virtual irradiance lobe, divided by the
++   * lobe's (tiny) contribution weight, so that weight * contribution estimates E/pi directly. */
++  if (kernel_data.film.pass_irradiance == PASS_UNUSED) {
++    return zero_spectrum();
++  }
++  return safe_divide(eval->irradiance, eval->sum) / kernel_data.film.irradiance_weight;
++}
++
++/* Transmission pass weight is what remains after diffuse, glossy and the virtual irradiance lobe
++ * (whose share of the throughput is irradiance_weight * pass_irradiance_weight). */
++ccl_device_inline Spectrum film_irradiance_share(KernelGlobals kg, const Spectrum irradiance_weight)
++{
++  return (kernel_data.film.pass_irradiance == PASS_UNUSED) ?
++             zero_spectrum() :
++             irradiance_weight * kernel_data.film.irradiance_weight;
++}
++
+ /* --------------------------------------------------------------------
+  * Clamping
+  *
+@@ -413,6 +443,15 @@ ccl_device_inline void film_write_emission_or_background_pass(
+       const Spectrum diffuse_weight = INTEGRATOR_STATE(state, path, pass_diffuse_weight);
+       const Spectrum glossy_weight = INTEGRATOR_STATE(state, path, pass_glossy_weight);
+ 
++      /* Irradiance at the camera hit (virtual Lambertian lobe). */
++      Spectrum irradiance_share = zero_spectrum();
++      if (kernel_data.film.pass_irradiance != PASS_UNUSED) {
++        const Spectrum irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
++        film_write_pass_spectrum(buffer + kernel_data.film.pass_irradiance,
++                                 irradiance_weight * contribution);
++        irradiance_share = film_irradiance_share(kg, irradiance_weight);
++      }
++
+       /* Glossy */
+       const int glossy_pass_offset = ((INTEGRATOR_STATE(state, path, bounce) == 1) ?
+                                           kernel_data.film.pass_glossy_direct :
+@@ -429,7 +468,8 @@ ccl_device_inline void film_write_emission_or_background_pass(
+       if (transmission_pass_offset != PASS_UNUSED) {
+         /* Transmission is what remains if not diffuse and glossy, not stored explicitly to save
+          * GPU memory. */
+-        const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight;
++        const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight -
++                                             irradiance_share;
+         film_write_pass_spectrum(buffer + transmission_pass_offset,
+                                  transmission_weight * contribution);
+       }
+@@ -511,6 +551,16 @@ ccl_device_inline void film_write_direct_light(KernelGlobals kg,
+         const Spectrum diffuse_weight = INTEGRATOR_STATE(state, shadow_path, pass_diffuse_weight);
+         const Spectrum glossy_weight = INTEGRATOR_STATE(state, shadow_path, pass_glossy_weight);
+ 
++        /* Irradiance at the camera hit (virtual Lambertian lobe). */
++        Spectrum irradiance_share = zero_spectrum();
++        if (kernel_data.film.pass_irradiance != PASS_UNUSED) {
++          const Spectrum irradiance_weight = INTEGRATOR_STATE(
++              state, shadow_path, pass_irradiance_weight);
++          film_write_pass_spectrum(buffer + kernel_data.film.pass_irradiance,
++                                   irradiance_weight * contribution);
++          irradiance_share = film_irradiance_share(kg, irradiance_weight);
++        }
++
+         /* Glossy */
+         const int glossy_pass_offset = ((INTEGRATOR_STATE(state, shadow_path, bounce) == 0) ?
+                                             kernel_data.film.pass_glossy_direct :
+@@ -527,7 +577,8 @@ ccl_device_inline void film_write_direct_light(KernelGlobals kg,
+         if (transmission_pass_offset != PASS_UNUSED) {
+           /* Transmission is what remains if not diffuse and glossy, not stored explicitly to save
+            * GPU memory. */
+-          const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight;
++          const Spectrum transmission_weight = one_spectrum() - diffuse_weight - glossy_weight -
++                                               irradiance_share;
+           film_write_pass_spectrum(buffer + transmission_pass_offset,
+                                    transmission_weight * contribution);
+         }
+diff --git a/intern/cycles/kernel/integrator/path_state.h b/intern/cycles/kernel/integrator/path_state.h
+index 639501d..f5ccb57 100644
+--- a/intern/cycles/kernel/integrator/path_state.h
++++ b/intern/cycles/kernel/integrator/path_state.h
+@@ -57,6 +57,10 @@ ccl_device_inline void path_state_init_integrator(KernelGlobals kg,
+   INTEGRATOR_STATE_WRITE(state, path, continuation_probability) = 1.0f;
+   INTEGRATOR_STATE_WRITE(state, path, throughput) = one_spectrum();
+ 
++  if (kernel_data.kernel_features & KERNEL_FEATURE_LIGHT_PASSES) {
++    INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) = zero_spectrum();
++  }
++
+ #ifdef __PATH_GUIDING__
+   INTEGRATOR_STATE_WRITE(state, path, unguided_throughput) = 1.0f;
+   INTEGRATOR_STATE_WRITE(state, guiding, path_segment) = nullptr;
+@@ -281,7 +285,16 @@ ccl_device_inline float path_state_continuation_probability(KernelGlobals kg,
+ #if defined(__PATH_GUIDING__) && PATH_GUIDING_LEVEL >= 4
+   throughput *= INTEGRATOR_STATE(state, path, unguided_throughput);
+ #endif
+-  return min(sqrtf(reduce_max(fabs(throughput))), 1.0f);
++  float max_throughput = reduce_max(fabs(throughput));
++  /* Irradiance pass: paths through the virtual lobe carry a tiny beauty throughput but a normal
++   * irradiance throughput; base the termination on the larger one so they are not killed early. */
++  if (kernel_data.film.pass_irradiance != PASS_UNUSED && kernel_data.film.irradiance_rr &&
++      (path_flag & PATH_RAY_SURFACE_PASS))
++  {
++    const Spectrum irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
++    max_throughput = fmaxf(max_throughput, reduce_max(fabs(throughput * irradiance_weight)));
++  }
++  return min(sqrtf(max_throughput), 1.0f);
+ }
+ 
+ ccl_device_inline bool path_state_ao_bounce(KernelGlobals kg, ConstIntegratorState state)
+diff --git a/intern/cycles/kernel/integrator/shade_dedicated_light.h b/intern/cycles/kernel/integrator/shade_dedicated_light.h
+index 7c7841d..41a3a65 100644
+--- a/intern/cycles/kernel/integrator/shade_dedicated_light.h
++++ b/intern/cycles/kernel/integrator/shade_dedicated_light.h
+@@ -217,6 +217,8 @@ ccl_device void shadow_linking_shade(KernelGlobals kg,
+         state, path, pass_diffuse_weight);
+     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_glossy_weight) = INTEGRATOR_STATE(
+         state, path, pass_glossy_weight);
++    INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_irradiance_weight) = INTEGRATOR_STATE(
++        state, path, pass_irradiance_weight);
+   }
+ 
+   INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, flag) = shadow_flag;
+diff --git a/intern/cycles/kernel/integrator/shade_surface.h b/intern/cycles/kernel/integrator/shade_surface.h
+index e1b3998..ab1aebf 100644
+--- a/intern/cycles/kernel/integrator/shade_surface.h
++++ b/intern/cycles/kernel/integrator/shade_surface.h
+@@ -406,21 +406,26 @@ ccl_device
+   if (kernel_data.kernel_features & KERNEL_FEATURE_LIGHT_PASSES) {
+     PackedSpectrum pass_diffuse_weight;
+     PackedSpectrum pass_glossy_weight;
++    PackedSpectrum pass_irradiance_weight;
+ 
+     if (shadow_flag & PATH_RAY_ANY_PASS) {
+       /* Indirect bounce, use weights from earlier surface or volume bounce. */
+       pass_diffuse_weight = INTEGRATOR_STATE(state, path, pass_diffuse_weight);
+       pass_glossy_weight = INTEGRATOR_STATE(state, path, pass_glossy_weight);
++      pass_irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
+     }
+     else {
+       /* Direct light, use BSDFs at this bounce. */
+       shadow_flag |= PATH_RAY_SURFACE_PASS;
+       pass_diffuse_weight = PackedSpectrum(bsdf_eval_pass_diffuse_weight(&bsdf_eval));
+       pass_glossy_weight = PackedSpectrum(bsdf_eval_pass_glossy_weight(&bsdf_eval));
++      pass_irradiance_weight = PackedSpectrum(bsdf_eval_pass_irradiance_weight(kg, &bsdf_eval));
+     }
+ 
+     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_diffuse_weight) = pass_diffuse_weight;
+     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_glossy_weight) = pass_glossy_weight;
++    INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_irradiance_weight) =
++        pass_irradiance_weight;
+   }
+ 
+   INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, flag) = shadow_flag;
+@@ -441,6 +446,37 @@ ccl_device_forceinline int integrate_surface_bsdf_bssrdf_bounce(
+   float3 rand_bsdf = path_state_rng_3D(kg, rng_state, PRNG_SURFACE_BSDF);
+   ccl_private const ShaderClosure *sc = surface_shader_bsdf_bssrdf_pick(sd, &rand_bsdf);
+ 
++#ifdef __DENOISING_FEATURES__
++  /* Irradiance pass: when denoising features are deferred to the next hit (specular camera hit),
++   * paths that picked the virtual irradiance lobe must not write them; the others compensate
++   * for the lobe's selection probability so the denoising albedo/normal stay unbiased. */
++  if (kernel_data.film.pass_irradiance != PASS_UNUSED &&
++      (INTEGRATOR_STATE(state, path, flag) & PATH_RAY_DENOISING_FEATURES) &&
++      sd->num_closure > 1 &&
++      sd->closure[sd->num_closure - 1].type == CLOSURE_BSDF_IRRADIANCE_ID)
++  {
++    ccl_private const ShaderClosure *irr_sc = &sd->closure[sd->num_closure - 1];
++    if (sc == irr_sc) {
++      INTEGRATOR_STATE_WRITE(state, path, flag) &= ~PATH_RAY_DENOISING_FEATURES;
++    }
++    else {
++      float sum = 0.0f;
++      for (int i = 0; i < sd->num_closure; i++) {
++        if (CLOSURE_IS_BSDF_OR_BSSRDF(sd->closure[i].type)) {
++          sum += sd->closure[i].sample_weight;
++        }
++      }
++      const float keep = sum - irr_sc->sample_weight;
++      if (keep > 0.0f) {
++        const Spectrum denoising_feature_throughput = INTEGRATOR_STATE(
++            state, path, denoising_feature_throughput);
++        INTEGRATOR_STATE_WRITE(state, path, denoising_feature_throughput) =
++            denoising_feature_throughput * (sum / keep);
++      }
++    }
++  }
++#endif
++
+ #ifdef __SUBSURFACE__
+   /* BSSRDF closure, we schedule subsurface intersection kernel. */
+   if (CLOSURE_IS_BSSRDF(sc->type)) {
+@@ -530,6 +566,8 @@ ccl_device_forceinline int integrate_surface_bsdf_bssrdf_bounce(
+           &bsdf_eval);
+       INTEGRATOR_STATE_WRITE(state, path, pass_glossy_weight) = bsdf_eval_pass_glossy_weight(
+           &bsdf_eval);
++      INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) =
++          bsdf_eval_pass_irradiance_weight(kg, &bsdf_eval);
+     }
+   }
+ 
+@@ -764,6 +802,10 @@ ccl_device int integrate_surface(KernelGlobals kg,
+ #ifdef __DENOISING_FEATURES__
+       film_write_denoising_features_surface(kg, state, &sd, render_buffer);
+ #endif
++
++      /* Irradiance pass: virtual Lambertian lobe at the camera hit, added after the data and
++       * denoising passes so they (Normal, DiffCol, albedo, ...) are not affected. */
++      surface_shader_add_irradiance_closure(kg, state, &sd, path_flag);
+     }
+ 
+     /* Load random number state. */
+diff --git a/intern/cycles/kernel/integrator/shade_volume.h b/intern/cycles/kernel/integrator/shade_volume.h
+index 2ba1ceb..63fbd91 100644
+--- a/intern/cycles/kernel/integrator/shade_volume.h
++++ b/intern/cycles/kernel/integrator/shade_volume.h
+@@ -827,21 +827,26 @@ ccl_device_forceinline void integrate_volume_direct_light(
+   if (kernel_data.kernel_features & KERNEL_FEATURE_LIGHT_PASSES) {
+     PackedSpectrum pass_diffuse_weight;
+     PackedSpectrum pass_glossy_weight;
++    PackedSpectrum pass_irradiance_weight;
+ 
+     if (shadow_flag & PATH_RAY_ANY_PASS) {
+       /* Indirect bounce, use weights from earlier surface or volume bounce. */
+       pass_diffuse_weight = INTEGRATOR_STATE(state, path, pass_diffuse_weight);
+       pass_glossy_weight = INTEGRATOR_STATE(state, path, pass_glossy_weight);
++      pass_irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
+     }
+     else {
+       /* Direct light, no diffuse/glossy distinction needed for volumes. */
+       shadow_flag |= PATH_RAY_VOLUME_PASS;
+       pass_diffuse_weight = one_spectrum();
+       pass_glossy_weight = zero_spectrum();
++      pass_irradiance_weight = zero_spectrum();
+     }
+ 
+     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_diffuse_weight) = pass_diffuse_weight;
+     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_glossy_weight) = pass_glossy_weight;
++    INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_irradiance_weight) =
++        pass_irradiance_weight;
+   }
+ 
+   INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, render_pixel_index) = INTEGRATOR_STATE(
+@@ -962,6 +967,7 @@ ccl_device_forceinline bool integrate_volume_phase_scatter(
+     if (INTEGRATOR_STATE(state, path, bounce) == 0) {
+       INTEGRATOR_STATE_WRITE(state, path, pass_diffuse_weight) = one_spectrum();
+       INTEGRATOR_STATE_WRITE(state, path, pass_glossy_weight) = zero_spectrum();
++      INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) = zero_spectrum();
+     }
+   }
+ 
+diff --git a/intern/cycles/kernel/integrator/shadow_state_template.h b/intern/cycles/kernel/integrator/shadow_state_template.h
+index 8bb577d..135e0f3 100644
+--- a/intern/cycles/kernel/integrator/shadow_state_template.h
++++ b/intern/cycles/kernel/integrator/shadow_state_template.h
+@@ -37,6 +37,10 @@ KERNEL_STRUCT_MEMBER(shadow_path,
+ /* Ratio of throughput to distinguish diffuse / glossy / transmission render passes. */
+ KERNEL_STRUCT_MEMBER(shadow_path, PackedSpectrum, pass_diffuse_weight, KERNEL_FEATURE_LIGHT_PASSES)
+ KERNEL_STRUCT_MEMBER(shadow_path, PackedSpectrum, pass_glossy_weight, KERNEL_FEATURE_LIGHT_PASSES)
++KERNEL_STRUCT_MEMBER(shadow_path,
++                     PackedSpectrum,
++                     pass_irradiance_weight,
++                     KERNEL_FEATURE_LIGHT_PASSES)
+ /* Number of intersections found by ray-tracing. */
+ KERNEL_STRUCT_MEMBER(shadow_path, uint16_t, num_hits, KERNEL_FEATURE_PATH_TRACING)
+ /* Light group. */
+diff --git a/intern/cycles/kernel/integrator/state_template.h b/intern/cycles/kernel/integrator/state_template.h
+index bec7183..a3697e5 100644
+--- a/intern/cycles/kernel/integrator/state_template.h
++++ b/intern/cycles/kernel/integrator/state_template.h
+@@ -58,6 +58,8 @@ KERNEL_STRUCT_MEMBER(path, float, unguided_throughput, KERNEL_FEATURE_PATH_GUIDI
+ /* Ratio of throughput to distinguish diffuse / glossy / transmission render passes. */
+ KERNEL_STRUCT_MEMBER(path, PackedSpectrum, pass_diffuse_weight, KERNEL_FEATURE_LIGHT_PASSES)
+ KERNEL_STRUCT_MEMBER(path, PackedSpectrum, pass_glossy_weight, KERNEL_FEATURE_LIGHT_PASSES)
++/* Irradiance pass weight: (virtual lobe eval / irradiance_weight) / total eval at the camera hit. */
++KERNEL_STRUCT_MEMBER(path, PackedSpectrum, pass_irradiance_weight, KERNEL_FEATURE_LIGHT_PASSES)
+ /* Denoising. */
+ KERNEL_STRUCT_MEMBER(path, PackedSpectrum, denoising_feature_throughput, KERNEL_FEATURE_DENOISING)
+ /* Shader sorting. */
+diff --git a/intern/cycles/kernel/integrator/subsurface.h b/intern/cycles/kernel/integrator/subsurface.h
+index cb3f307..2acb73a 100644
+--- a/intern/cycles/kernel/integrator/subsurface.h
++++ b/intern/cycles/kernel/integrator/subsurface.h
+@@ -133,6 +133,7 @@ ccl_device int subsurface_bounce(KernelGlobals kg,
+     if (INTEGRATOR_STATE(state, path, bounce) == 0) {
+       INTEGRATOR_STATE_WRITE(state, path, pass_diffuse_weight) = one_spectrum();
+       INTEGRATOR_STATE_WRITE(state, path, pass_glossy_weight) = zero_spectrum();
++      INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) = zero_spectrum();
+     }
+   }
+ 
+diff --git a/intern/cycles/kernel/integrator/surface_shader.h b/intern/cycles/kernel/integrator/surface_shader.h
+index f94adf4..c60ab51 100644
+--- a/intern/cycles/kernel/integrator/surface_shader.h
++++ b/intern/cycles/kernel/integrator/surface_shader.h
+@@ -209,6 +209,63 @@ ccl_device_inline void surface_shader_prepare_closures(KernelGlobals kg,
+   }
+ }
+ 
++/* Irradiance pass: append a virtual white Lambertian closure (normal sd->N) at the first camera
++ * hit. Its contribution weight is tiny (kernel_data.film.irradiance_weight) so the beauty is
++ * visually unchanged, but it gets a large share of the closure-selection probability
++ * (irradiance_sample_fraction). Closure selection and MIS use sample_weight while the estimate
++ * uses weight, so the beauty stays unbiased; the light that reaches the camera through this lobe,
++ * divided by its weight, is an unbiased estimate of E/pi. Returns true if the lobe was added. */
++ccl_device_inline bool surface_shader_add_irradiance_closure(KernelGlobals kg,
++                                                             ConstIntegratorState state,
++                                                             ccl_private ShaderData *sd,
++                                                             const uint32_t path_flag)
++{
++  if (kernel_data.film.pass_irradiance == PASS_UNUSED) {
++    return false;
++  }
++  if (!(path_flag & PATH_RAY_CAMERA) || INTEGRATOR_STATE(state, path, bounce) != 0 ||
++      INTEGRATOR_STATE(state, path, transparent_bounce) != 0)
++  {
++    return false;
++  }
++  if (path_flag & (PATH_RAY_TERMINATE | PATH_RAY_SHADOW_CATCHER_PASS)) {
++    return false;
++  }
++
++  /* S: total selection weight, D: weight of closures that already sample a cosine lobe. */
++  float sum_sample_weight = 0.0f, diffuse_sample_weight = 0.0f;
++  for (int i = 0; i < sd->num_closure; i++) {
++    ccl_private const ShaderClosure *sc = &sd->closure[i];
++    if (CLOSURE_IS_BSDF_OR_BSSRDF(sc->type)) {
++      sum_sample_weight += sc->sample_weight;
++      if (sc->type == CLOSURE_BSDF_DIFFUSE_ID || sc->type == CLOSURE_BSDF_OREN_NAYAR_ID) {
++        diffuse_sample_weight += sc->sample_weight;
++      }
++    }
++  }
++
++  ccl_private ShaderClosure *sc = closure_alloc(
++      sd, sizeof(DiffuseBsdf), CLOSURE_BSDF_IRRADIANCE_ID, make_spectrum(kernel_data.film.irradiance_weight));
++  if (sc == NULL) {
++    return false;
++  }
++  /* Choose the lobe's selection weight s so that cosine-like sampling (existing diffuse closures
++   * plus this lobe) gets at least a fraction f of all selections: (D + s) / (S + s) = f, and the
++   * lobe itself at least fmin (it must keep a non-zero pdf, e.g. under bump-mapped diffuse).
++   * With no other closure (pure emission, black surfaces) the lobe is always sampled. */
++  const float f = kernel_data.film.irradiance_sample_fraction;
++  const float fmin = kernel_data.film.irradiance_min_fraction;
++  float s = 1.0f;
++  if (sum_sample_weight > 0.0f) {
++    s = fmaxf((f * sum_sample_weight - diffuse_sample_weight) / (1.0f - f),
++              sum_sample_weight * fmin / (1.0f - fmin));
++  }
++  sc->sample_weight = s;
++  sc->N = sd->N;
++  sd->flag |= SD_BSDF | SD_BSDF_HAS_EVAL;
++  return true;
++}
++
+ /* BSDF */
+ #ifdef WITH_CYCLES_DEBUG
+ ccl_device_inline void surface_shader_validate_bsdf_sample(const KernelGlobals kg,
+@@ -237,7 +294,7 @@ ccl_device_forceinline bool _surface_shader_exclude(ClosureType type, uint light
+     return false;
+   }
+   if (light_shader_flags & SHADER_EXCLUDE_DIFFUSE) {
+-    if (CLOSURE_IS_BSDF_DIFFUSE(type)) {
++    if (CLOSURE_IS_BSDF_DIFFUSE(type) || type == CLOSURE_BSDF_IRRADIANCE_ID) {
+       return true;
+     }
+   }
+diff --git a/intern/cycles/kernel/svm/types.h b/intern/cycles/kernel/svm/types.h
+index 56c0098..89b7183 100644
+--- a/intern/cycles/kernel/svm/types.h
++++ b/intern/cycles/kernel/svm/types.h
+@@ -448,6 +448,9 @@ typedef enum ClosureType {
+   CLOSURE_BSDF_HAIR_HUANG_ID,
+ 
+   /* Special cases */
++  /* Virtual white Lambertian lobe added at camera hits for the Irradiance pass (never created by
++   * shader nodes). Not counted as diffuse/glossy/transmission for the regular light passes. */
++  CLOSURE_BSDF_IRRADIANCE_ID,
+   CLOSURE_BSDF_RAY_PORTAL_ID,
+   CLOSURE_BSDF_TRANSPARENT_ID,
+ 
+diff --git a/intern/cycles/kernel/types.h b/intern/cycles/kernel/types.h
+index 9cd8634..e83e579 100644
+--- a/intern/cycles/kernel/types.h
++++ b/intern/cycles/kernel/types.h
+@@ -526,6 +526,8 @@ typedef enum PassType {
+   PASS_VOLUME,
+   PASS_VOLUME_DIRECT,
+   PASS_VOLUME_INDIRECT,
++  /* Irradiance E/pi at the first camera hit, from a virtual white Lambertian lobe. */
++  PASS_IRRADIANCE,
+   PASS_CATEGORY_LIGHT_END = 31,
+ 
+   /* Data passes */
+@@ -597,6 +599,8 @@ typedef enum CryptomatteType {
+ typedef struct BsdfEval {
+   Spectrum diffuse;
+   Spectrum glossy;
++  /* Contribution of the virtual irradiance closure (CLOSURE_BSDF_IRRADIANCE_ID). */
++  Spectrum irradiance;
+   Spectrum sum;
+ } BsdfEval;
+ 
+diff --git a/intern/cycles/scene/film.cpp b/intern/cycles/scene/film.cpp
+index eb656b0..9781893 100644
+--- a/intern/cycles/scene/film.cpp
++++ b/intern/cycles/scene/film.cpp
+@@ -20,8 +20,21 @@
+ #include "util/math_cdf.h"
+ #include "util/time.h"
+ 
++#include <cstdlib>
++
+ CCL_NAMESPACE_BEGIN
+ 
++/* Irradiance pass tuning, read from the environment (defaults in parentheses):
++ *   CYCLES_IRRADIANCE_WEIGHT        contribution weight of the virtual lobe (1e-3)
++ *   CYCLES_IRRADIANCE_FRACTION      min. share of cosine-lobe sampling at camera hits (0.35)
++ *   CYCLES_IRRADIANCE_MIN_FRACTION  min. selection share of the virtual lobe itself (0.05)
++ *   CYCLES_IRRADIANCE_RR            1: Russian roulette also looks at irradiance throughput (1) */
++static float irradiance_env(const char *name, const float default_value)
++{
++  const char *value = getenv(name);
++  return (value && value[0]) ? (float)atof(value) : default_value;
++}
++
+ /* Pixel Filter */
+ 
+ static float filter_func_box(float /*v*/, float /*width*/)
+@@ -201,6 +214,15 @@ void Film::device_update(Device *device, DeviceScene *dscene, Scene *scene)
+   kfilm->pass_guiding_probability = PASS_UNUSED;
+   kfilm->pass_guiding_avg_roughness = PASS_UNUSED;
+ 
++  kfilm->pass_irradiance = PASS_UNUSED;
++  kfilm->irradiance_weight = clamp(irradiance_env("CYCLES_IRRADIANCE_WEIGHT", 1e-3f), 1e-6f, 1.0f);
++  kfilm->irradiance_sample_fraction = clamp(
++      irradiance_env("CYCLES_IRRADIANCE_FRACTION", 0.35f), 0.0f, 0.95f);
++  kfilm->irradiance_min_fraction = clamp(
++      irradiance_env("CYCLES_IRRADIANCE_MIN_FRACTION", 0.05f), 1e-3f, 0.95f);
++  kfilm->irradiance_rr = (irradiance_env("CYCLES_IRRADIANCE_RR", 1.0f) != 0.0f) ? 1 : 0;
++  kfilm->irradiance_pad0 = kfilm->irradiance_pad1 = kfilm->irradiance_pad2 = 0;
++
+   bool have_cryptomatte = false;
+   bool have_aov_color = false;
+   bool have_aov_value = false;
+@@ -326,6 +348,9 @@ void Film::device_update(Device *device, DeviceScene *dscene, Scene *scene)
+       case PASS_VOLUME_DIRECT:
+         kfilm->pass_volume_direct = kfilm->pass_stride;
+         break;
++      case PASS_IRRADIANCE:
++        kfilm->pass_irradiance = kfilm->pass_stride;
++        break;
+ 
+       case PASS_BAKE_PRIMITIVE:
+         kfilm->pass_bake_primitive = kfilm->pass_stride;
+@@ -548,6 +573,10 @@ void Film::update_passes(Scene *scene, bool add_sample_count_pass)
+     if (info.support_denoise && use_denoise) {
+       add_auto_pass(scene, pass->get_type(), PassMode::DENOISED);
+     }
++    /* The kernel writes the irradiance pass into its noisy version. */
++    if (pass->get_type() == PASS_IRRADIANCE) {
++      add_auto_pass(scene, PASS_IRRADIANCE, PassMode::NOISY);
++    }
+   }
+ 
+   if (bake_manager->get_baking()) {
+@@ -720,7 +749,7 @@ uint Film::get_kernel_features(const Scene *scene) const
+       kernel_features |= KERNEL_FEATURE_DENOISING;
+     }
+ 
+-    if (pass_type >= PASS_DIFFUSE && pass_type <= PASS_VOLUME_INDIRECT) {
++    if (pass_type >= PASS_DIFFUSE && pass_type <= PASS_IRRADIANCE) {
+       kernel_features |= KERNEL_FEATURE_LIGHT_PASSES;
+     }
+ 
+diff --git a/intern/cycles/scene/pass.cpp b/intern/cycles/scene/pass.cpp
+index 062d7cb..44d0c26 100644
+--- a/intern/cycles/scene/pass.cpp
++++ b/intern/cycles/scene/pass.cpp
+@@ -65,6 +65,7 @@ const NodeEnum *Pass::get_type_enum()
+     pass_type_enum.insert("volume", PASS_VOLUME);
+     pass_type_enum.insert("volume_direct", PASS_VOLUME_DIRECT);
+     pass_type_enum.insert("volume_indirect", PASS_VOLUME_INDIRECT);
++    pass_type_enum.insert("irradiance", PASS_IRRADIANCE);
+ 
+     /* Data passes. */
+     pass_type_enum.insert("depth", PASS_DEPTH);
+@@ -274,6 +275,13 @@ PassInfo Pass::get_info(const PassType type, const bool include_albedo, const bo
+       pass_info.num_components = 3;
+       pass_info.use_exposure = true;
+       break;
++    case PASS_IRRADIANCE:
++      /* E/pi at the camera hit. Denoised with a constant (fake) albedo, like the shadow catcher. */
++      pass_info.num_components = 3;
++      pass_info.use_exposure = true;
++      pass_info.use_denoising_albedo = false;
++      pass_info.support_denoise = true;
++      break;
+ 
+     case PASS_CRYPTOMATTE:
+       pass_info.num_components = 4;
+diff --git a/intern/cycles/scene/scene.cpp b/intern/cycles/scene/scene.cpp
+index 341e6ec..cc295ba 100644
+--- a/intern/cycles/scene/scene.cpp
++++ b/intern/cycles/scene/scene.cpp
+@@ -566,7 +566,11 @@ void Scene::update_kernel_features()
+   dscene.data.kernel_features = kernel_features;
+ 
+   /* Currently viewport render is faster with higher max_closures, needs investigating. */
+-  const uint max_closures = (params.background) ? get_max_closure_count() : MAX_CLOSURE;
++  uint max_closures = (params.background) ? get_max_closure_count() : MAX_CLOSURE;
++  /* Irradiance pass appends one virtual closure at camera hits. */
++  if (Pass::contains(passes, PASS_IRRADIANCE)) {
++    max_closures = min(max_closures + 1, (uint)MAX_CLOSURE);
++  }
+   dscene.data.max_closures = max_closures;
+   dscene.data.max_shaders = shaders.size();
+ }

@@ -406,21 +406,26 @@ ccl_device
   if (kernel_data.kernel_features & KERNEL_FEATURE_LIGHT_PASSES) {
     PackedSpectrum pass_diffuse_weight;
     PackedSpectrum pass_glossy_weight;
+    PackedSpectrum pass_irradiance_weight;
 
     if (shadow_flag & PATH_RAY_ANY_PASS) {
       /* Indirect bounce, use weights from earlier surface or volume bounce. */
       pass_diffuse_weight = INTEGRATOR_STATE(state, path, pass_diffuse_weight);
       pass_glossy_weight = INTEGRATOR_STATE(state, path, pass_glossy_weight);
+      pass_irradiance_weight = INTEGRATOR_STATE(state, path, pass_irradiance_weight);
     }
     else {
       /* Direct light, use BSDFs at this bounce. */
       shadow_flag |= PATH_RAY_SURFACE_PASS;
       pass_diffuse_weight = PackedSpectrum(bsdf_eval_pass_diffuse_weight(&bsdf_eval));
       pass_glossy_weight = PackedSpectrum(bsdf_eval_pass_glossy_weight(&bsdf_eval));
+      pass_irradiance_weight = PackedSpectrum(bsdf_eval_pass_irradiance_weight(kg, &bsdf_eval));
     }
 
     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_diffuse_weight) = pass_diffuse_weight;
     INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_glossy_weight) = pass_glossy_weight;
+    INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, pass_irradiance_weight) =
+        pass_irradiance_weight;
   }
 
   INTEGRATOR_STATE_WRITE(shadow_state, shadow_path, flag) = shadow_flag;
@@ -440,6 +445,37 @@ ccl_device_forceinline int integrate_surface_bsdf_bssrdf_bounce(
 
   float3 rand_bsdf = path_state_rng_3D(kg, rng_state, PRNG_SURFACE_BSDF);
   ccl_private const ShaderClosure *sc = surface_shader_bsdf_bssrdf_pick(sd, &rand_bsdf);
+
+#ifdef __DENOISING_FEATURES__
+  /* Irradiance pass: when denoising features are deferred to the next hit (specular camera hit),
+   * paths that picked the virtual irradiance lobe must not write them; the others compensate
+   * for the lobe's selection probability so the denoising albedo/normal stay unbiased. */
+  if (kernel_data.film.pass_irradiance != PASS_UNUSED &&
+      (INTEGRATOR_STATE(state, path, flag) & PATH_RAY_DENOISING_FEATURES) &&
+      sd->num_closure > 1 &&
+      sd->closure[sd->num_closure - 1].type == CLOSURE_BSDF_IRRADIANCE_ID)
+  {
+    ccl_private const ShaderClosure *irr_sc = &sd->closure[sd->num_closure - 1];
+    if (sc == irr_sc) {
+      INTEGRATOR_STATE_WRITE(state, path, flag) &= ~PATH_RAY_DENOISING_FEATURES;
+    }
+    else {
+      float sum = 0.0f;
+      for (int i = 0; i < sd->num_closure; i++) {
+        if (CLOSURE_IS_BSDF_OR_BSSRDF(sd->closure[i].type)) {
+          sum += sd->closure[i].sample_weight;
+        }
+      }
+      const float keep = sum - irr_sc->sample_weight;
+      if (keep > 0.0f) {
+        const Spectrum denoising_feature_throughput = INTEGRATOR_STATE(
+            state, path, denoising_feature_throughput);
+        INTEGRATOR_STATE_WRITE(state, path, denoising_feature_throughput) =
+            denoising_feature_throughput * (sum / keep);
+      }
+    }
+  }
+#endif
 
 #ifdef __SUBSURFACE__
   /* BSSRDF closure, we schedule subsurface intersection kernel. */
@@ -530,6 +566,8 @@ ccl_device_forceinline int integrate_surface_bsdf_bssrdf_bounce(
           &bsdf_eval);
       INTEGRATOR_STATE_WRITE(state, path, pass_glossy_weight) = bsdf_eval_pass_glossy_weight(
           &bsdf_eval);
+      INTEGRATOR_STATE_WRITE(state, path, pass_irradiance_weight) =
+          bsdf_eval_pass_irradiance_weight(kg, &bsdf_eval);
     }
   }
 
@@ -764,6 +802,10 @@ ccl_device int integrate_surface(KernelGlobals kg,
 #ifdef __DENOISING_FEATURES__
       film_write_denoising_features_surface(kg, state, &sd, render_buffer);
 #endif
+
+      /* Irradiance pass: virtual Lambertian lobe at the camera hit, added after the data and
+       * denoising passes so they (Normal, DiffCol, albedo, ...) are not affected. */
+      surface_shader_add_irradiance_closure(kg, state, &sd, path_flag);
     }
 
     /* Load random number state. */
