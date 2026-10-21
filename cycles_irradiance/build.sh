@@ -1,8 +1,9 @@
 #!/bin/bash
-# Configure + build a headless Blender 4.2.9 with the Cycles irradiance patch (CUDA sm_90 + OptiX).
-# Usage: bash build.sh [jobs]
+# Configure + build a headless Blender 4.2.9 with the Cycles irradiance patch (CUDA cubins + OptiX PTX).
+# Usage: [CUDA_ARCHS="sm_90;sm_120"] bash build.sh [jobs]   (sm_90 = H100, sm_120 = Blackwell RTX PRO 6000; CUDA >= 12.8)
 set -ex
 J=${1:-12}
+ARCHS=${CUDA_ARCHS:-"sm_90;sm_120"}
 SRC=/tmp/cyc/blender BUILD=/tmp/cyc/build
 cd $SRC
 if ! grep -q CLOSURE_BSDF_IRRADIANCE_ID intern/cycles/kernel/svm/types.h; then
@@ -28,7 +29,7 @@ cmake -S $SRC -B $BUILD -G "Unix Makefiles" \
   -DWITH_LIBS_PRECOMPILED=ON \
   -DWITH_GHOST_X11=OFF -DWITH_GHOST_WAYLAND=OFF \
   -DWITH_INSTALL_PORTABLE=ON -DWITH_PYTHON_INSTALL=ON \
-  -DWITH_CYCLES_DEVICE_CUDA=ON -DWITH_CYCLES_CUDA_BINARIES=ON -DCYCLES_CUDA_BINARIES_ARCH=sm_90 \
+  -DWITH_CYCLES_DEVICE_CUDA=ON -DWITH_CYCLES_CUDA_BINARIES=ON -DCYCLES_CUDA_BINARIES_ARCH="$ARCHS" \
   -DWITH_CYCLES_DEVICE_OPTIX=ON -DOPTIX_ROOT_DIR=/tmp/cyc/optix-dev \
   -DCUDA_TOOLKIT_ROOT_DIR=/tmp/cyc/cuda129 -DCUDA_NVCC_EXECUTABLE=/tmp/cyc/cuda129/bin/nvcc \
   -DWITH_CYCLES_DEVICE_HIP=OFF -DWITH_CYCLES_HIP_BINARIES=OFF -DWITH_CYCLES_DEVICE_HIPRT=OFF \
@@ -38,5 +39,6 @@ cmake -S $SRC -B $BUILD -G "Unix Makefiles" \
 nice -n 5 make -C $BUILD -j$J install > /tmp/cyc/make.log 2>&1 || { grep -n -B2 -A8 "error" /tmp/cyc/make.log | head -120; exit 1; }
 tail -3 /tmp/cyc/make.log
 test -x $BUILD/bin/blender
+ls $BUILD/bin/4.2/scripts/addons_core/cycles/lib/ 2>/dev/null || find $BUILD/bin -name "kernel_*.cubin*" -o -name "kernel_optix*" | head
 $BUILD/bin/blender --version | head -2
 echo BUILD_DONE
